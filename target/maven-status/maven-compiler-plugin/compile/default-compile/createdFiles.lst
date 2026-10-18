@@ -1,0 +1,5 @@
+com\demo\storage\controller\StorageTccController.class
+com\demo\storage\service\StorageTccService.class
+com\demo\storage\service\TccResponse.class
+com\demo\storage\StorageServiceApplication.class
+com\demo\storage\web\StorageTccRequest.class
