@@ -12,6 +12,8 @@ public class StorageTccRequest {
     private boolean mockFail;
     /** true = 模拟 Confirm 阶段失败（验证发起方重试） */
     private boolean mockFailConfirm;
+    /** true = 模拟 Cancel 阶段失败（验证发起方重试） */
+    private boolean mockFailCancel;
 
     public String getXid() {
         return xid;
@@ -51,5 +53,13 @@ public class StorageTccRequest {
 
     public void setMockFailConfirm(boolean mockFailConfirm) {
         this.mockFailConfirm = mockFailConfirm;
+    }
+
+    public boolean isMockFailCancel() {
+        return mockFailCancel;
+    }
+
+    public void setMockFailCancel(boolean mockFailCancel) {
+        this.mockFailCancel = mockFailCancel;
     }
 }

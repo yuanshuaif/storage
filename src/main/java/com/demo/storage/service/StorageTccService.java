@@ -112,7 +112,14 @@ public class StorageTccService {
 
     /** Cancel：解冻归还（frozen -= n 且 available += n，资源释放） */
     @Transactional
-    public TccResponse cancel(String xid) {
+    public TccResponse cancel(String xid, boolean mockFailCancel) {
+        if (mockFailCancel) {
+            // 模拟 Cancel 阶段失败：不改变任何状态（包括不写空回滚标记），
+            // 发起方将按“回滚必须最终成功”的语义持续重试
+            log.warn("[Storage-Cancel] xid={} 模拟 Cancel 阶段失败（等待发起方重试）", xid);
+            return TccResponse.fail("NONE", "模拟 Cancel 阶段失败");
+        }
+
         Map<String, Object> branch = findBranch(xid);
         if (branch == null) {
             // 空回滚：Try 未执行（或 Try 未成功落库）就收到了 Cancel。

@@ -38,6 +38,6 @@ public class StorageTccController {
 
     @PostMapping("/cancel")
     public TccResponse cancel(@RequestBody StorageTccRequest request) {
-        return storageTccService.cancel(request.getXid());
+        return storageTccService.cancel(request.getXid(), request.isMockFailCancel());
     }
 }
