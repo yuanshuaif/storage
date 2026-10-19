@@ -1,5 +1,6 @@
 package com.demo.storage.service;
 
+import com.demo.storage.tcc.TccAction;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -12,21 +13,29 @@ import java.util.Map;
 /**
  * 库存分支 TCC 三个阶段的实现（TCC 参与方核心）
  *
+ * 类上的 @TccAction 声明了本动作的句柄与三阶段方法名——参与方自己定位方法；
+ * 协调器只认注册表里的 actionName，通过 /tcc/invoke 通用端点按 phase 分发到这里。
+ *
  * 三个阶段的资源语义（available=可用库存，frozen=冻结库存）：
  *   Try    —— 资源预留：available -= n 且 frozen += n（把 n 件库存“冻结”起来给别人用不了）
  *   Confirm —— 提交事务：frozen -= n（冻结量转成真实扣减，库存真正减少）
  *   Cancel  —— 回滚事务：frozen -= n 且 available += n（解冻归还）
  *
- * TCC 三大问题处理（依赖 t_branch_txn_log 分支事务日志）：
+ * TCC 三大问题处理（依赖 t_branch_txn_log 分支事务日志，键为 xid+action_name）：
  *   幂等     —— Confirm/Cancel 已执行过（终态）时重复调用直接返回成功
  *   空回滚   —— Cancel 时 Try 未执行过（无日志），写入 EMPTY_CANCELLED 标记后直接返回成功
  *   防悬挂   —— Try 时若发现已有回滚标记（CANCELLED / EMPTY_CANCELLED），拒绝执行，
  *              避免迟到的 Try 在 Cancel 之后又把资源冻住、永远无人释放
  */
+@TccAction(name = StorageTccService.ACTION_NAME,
+        tryMethod = "tryDeduct", confirmMethod = "confirm", cancelMethod = "cancel")
 @Service
 public class StorageTccService {
 
     private static final Logger log = LoggerFactory.getLogger(StorageTccService.class);
+
+    /** 本动作的句柄（与 @TccAction.name 一致，分支日志按它隔离） */
+    public static final String ACTION_NAME = "deductStorage";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -70,8 +79,9 @@ public class StorageTccService {
 
         // 记录分支日志（Try 成功的凭据），与库存变更在同一本地事务内
         jdbcTemplate.update(
-                "INSERT INTO t_branch_txn_log(xid, product_id, order_count, state) VALUES (?, ?, ?, 'TRIED')",
-                xid, productId, count);
+                "INSERT INTO t_branch_txn_log(xid, action_name, product_id, order_count, state) " +
+                        "VALUES (?, ?, ?, ?, 'TRIED')",
+                xid, ACTION_NAME, productId, count);
         log.info("[Storage-Try] xid={} 商品 {} 冻结 {} 件成功", xid, productId, count);
         return TccResponse.ok("TRIED", "冻结库存成功");
     }
@@ -105,7 +115,9 @@ public class StorageTccService {
         long productId = ((Number) branch.get("PRODUCT_ID")).longValue();
         int count = ((Number) branch.get("ORDER_COUNT")).intValue();
         jdbcTemplate.update("UPDATE t_storage SET frozen = frozen - ? WHERE product_id = ?", count, productId);
-        jdbcTemplate.update("UPDATE t_branch_txn_log SET state = 'CONFIRMED' WHERE xid = ?", xid);
+        jdbcTemplate.update(
+                "UPDATE t_branch_txn_log SET state = 'CONFIRMED' WHERE xid = ? AND action_name = ?",
+                xid, ACTION_NAME);
         log.info("[Storage-Confirm] xid={} 商品 {} 冻结量 {} 件转为实际扣减", xid, productId, count);
         return TccResponse.ok("CONFIRMED", "库存扣减提交成功");
     }
@@ -126,7 +138,8 @@ public class StorageTccService {
             // 写入 EMPTY_CANCELLED 标记：既让本次 Cancel 顺利返回成功，
             // 又能挡住之后迟到的 Try（防悬挂）。
             jdbcTemplate.update(
-                    "INSERT INTO t_branch_txn_log(xid, state) VALUES (?, 'EMPTY_CANCELLED')", xid);
+                    "INSERT INTO t_branch_txn_log(xid, action_name, state) VALUES (?, ?, 'EMPTY_CANCELLED')",
+                    xid, ACTION_NAME);
             log.warn("[Storage-Cancel] xid={} Try 未执行过，空回滚：写入 EMPTY_CANCELLED 标记", xid);
             return TccResponse.ok("EMPTY_CANCELLED", "空回滚：Try 未执行，仅记录标记");
         }
@@ -148,15 +161,17 @@ public class StorageTccService {
         jdbcTemplate.update(
                 "UPDATE t_storage SET frozen = frozen - ?, available = available + ? WHERE product_id = ?",
                 count, count, productId);
-        jdbcTemplate.update("UPDATE t_branch_txn_log SET state = 'CANCELLED' WHERE xid = ?", xid);
+        jdbcTemplate.update(
+                "UPDATE t_branch_txn_log SET state = 'CANCELLED' WHERE xid = ? AND action_name = ?",
+                xid, ACTION_NAME);
         log.info("[Storage-Cancel] xid={} 商品 {} 解冻 {} 件归还可用库存", xid, productId, count);
         return TccResponse.ok("CANCELLED", "解冻归还成功");
     }
 
-    /** 查询分支事务日志，不存在返回 null */
+    /** 查询本动作的分支事务日志，不存在返回 null */
     private Map<String, Object> findBranch(String xid) {
         List<Map<String, Object>> rows = jdbcTemplate.queryForList(
-                "SELECT * FROM t_branch_txn_log WHERE xid = ?", xid);
+                "SELECT * FROM t_branch_txn_log WHERE xid = ? AND action_name = ?", xid, ACTION_NAME);
         return rows.isEmpty() ? null : rows.get(0);
     }
 }

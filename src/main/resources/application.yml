@@ -16,3 +16,10 @@ spring:
     console:
       enabled: true
       path: /h2-console
+
+# TCC 框架配置
+tcc:
+  self:
+    url: http://localhost:8082      # 本服务对外地址（注册给注册服务，协调器按此回调）
+  registry:
+    base-url: http://localhost:8083 # 注册服务地址（启动时把 @TccAction 动作推送过去）
