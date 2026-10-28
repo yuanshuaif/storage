@@ -11,18 +11,19 @@ import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 
 /**
- * 通用调用端点：协调器对任何 TCC 动作、任何阶段，都只调这一个接口。
+ * 二阶段统一调用端点：协调器对任何 TCC 动作做 Confirm/Cancel，都只调这一个接口
+ * （一阶段 Try 不走这里——按约定直调 POST /tcc/{动作名} 业务端点）。
  *
  *   POST /tcc/invoke
- *   { "xid": "...", "actionName": "deductStorage", "phase": "TRY", "params": {...} }
+ *   { "xid": "...", "actionName": "deduct", "phase": "CONFIRM", "params": {...} }
  *
- * 分发规则：
- *   1. actionName -> 本服务 @TccAction 登记（方法由参与方自己声明，协调器不感知）
- *   2. phase      -> TRY / CONFIRM / CANCEL 对应的方法
+ * 分发规则（对应 Seata TC 回调 RM 后 TCCResourceManager 的反射执行）：
+ *   1. actionName -> 本服务 @TccAction 登记（动作名与伴生方法由参与方启动期派生解析）
+ *   2. phase      -> TRY / CONFIRM / CANCEL 对应的 Method（启动期已缓存）
  *   3. 形参绑定   -> 形参名为 xid / actionName 的取信封字段，其余从 params 按名取并做类型转换
  *
  * 业务方法照常走 @Transactional（反射调用落在 CGLIB 代理上，事务拦截不丢失）。
- * 对应 Seata RM 的 Resource 机制：TC 报 branchId，RM 按注册的资源反射执行。
+ * 手工重放任意动作/任意阶段（恢复、防悬挂验证）也用这个端点。
  */
 @RestController
 public class TccInvokeDispatcher {

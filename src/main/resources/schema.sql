@@ -11,7 +11,7 @@ CREATE TABLE IF NOT EXISTS t_storage (
 -- state 取值：TRIED（Try已执行）/ CONFIRMED / CANCELLED / EMPTY_CANCELLED（空回滚标记）
 CREATE TABLE IF NOT EXISTS t_branch_txn_log (
     xid         VARCHAR(64),
-    action_name VARCHAR(64) NOT NULL DEFAULT 'deductStorage',
+    action_name VARCHAR(64) NOT NULL DEFAULT 'deduct',
     product_id  BIGINT,
     order_count INT,
     state       VARCHAR(16) NOT NULL,

@@ -13,13 +13,15 @@ import java.util.Map;
 /**
  * 库存分支 TCC 三个阶段的实现（TCC 参与方核心）
  *
- * 类上的 @TccAction 声明了本动作的句柄与三阶段方法名——参与方自己定位方法；
- * 协调器只认注册表里的 actionName，通过 /tcc/invoke 通用端点按 phase 分发到这里。
+ * 三个方法都是正常业务命名；@TccAction 标在 Try 业务方法 deduct 上，
+ * 动作名缺省即方法名（deduct），Confirm/Cancel 按约定派生为
+ * confirmDeduct / cancelDeduct——由 LocalTccActionRegistry 启动期解析定位。
+ * 调用形态：一阶段 POST /tcc/deduct 直调业务端点；二阶段经 /tcc/invoke 反射分发。
  *
  * 三个阶段的资源语义（available=可用库存，frozen=冻结库存）：
- *   Try    —— 资源预留：available -= n 且 frozen += n（把 n 件库存“冻结”起来给别人用不了）
- *   Confirm —— 提交事务：frozen -= n（冻结量转成真实扣减，库存真正减少）
- *   Cancel  —— 回滚事务：frozen -= n 且 available += n（解冻归还）
+ *   deduct       —— 资源预留：available -= n 且 frozen += n（把 n 件库存“冻结”起来给别人用不了）
+ *   confirmDeduct —— 提交事务：frozen -= n（冻结量转成真实扣减，库存真正减少）
+ *   cancelDeduct  —— 回滚事务：frozen -= n 且 available += n（解冻归还）
  *
  * TCC 三大问题处理（依赖 t_branch_txn_log 分支事务日志，键为 xid+action_name）：
  *   幂等     —— Confirm/Cancel 已执行过（终态）时重复调用直接返回成功
@@ -27,15 +29,13 @@ import java.util.Map;
  *   防悬挂   —— Try 时若发现已有回滚标记（CANCELLED / EMPTY_CANCELLED），拒绝执行，
  *              避免迟到的 Try 在 Cancel 之后又把资源冻住、永远无人释放
  */
-@TccAction(name = StorageTccService.ACTION_NAME,
-        tryMethod = "tryDeduct", confirmMethod = "confirm", cancelMethod = "cancel")
 @Service
 public class StorageTccService {
 
     private static final Logger log = LoggerFactory.getLogger(StorageTccService.class);
 
-    /** 本动作的句柄（与 @TccAction.name 一致，分支日志按它隔离） */
-    public static final String ACTION_NAME = "deductStorage";
+    /** 本动作的句柄（与 @TccAction 缺省动作名一致，分支日志按它隔离） */
+    public static final String ACTION_NAME = "deduct";
 
     private final JdbcTemplate jdbcTemplate;
 
@@ -43,9 +43,10 @@ public class StorageTccService {
         this.jdbcTemplate = jdbcTemplate;
     }
 
-    /** Try：冻结库存（资源预留） */
+    /** Try：冻结库存（资源预留）——正常业务方法，一阶段被直调 */
+    @TccAction
     @Transactional
-    public TccResponse tryDeduct(String xid, long productId, int count, boolean mockFail) {
+    public TccResponse deduct(String xid, long productId, int count, boolean mockFail) {
         if (mockFail) {
             // 模拟 Try 阶段业务失败（不写任何数据），用于验证全局 Cancel 回滚
             log.warn("[Storage-Try] xid={} 模拟 Try 阶段业务失败", xid);
@@ -86,9 +87,9 @@ public class StorageTccService {
         return TccResponse.ok("TRIED", "冻结库存成功");
     }
 
-    /** Confirm：冻结转实扣（frozen -= n，业务真正提交） */
+    /** Confirm：冻结转实扣（frozen -= n，业务真正提交）——二阶段反射调用 */
     @Transactional
-    public TccResponse confirm(String xid, boolean mockFailConfirm) {
+    public TccResponse confirmDeduct(String xid, boolean mockFailConfirm) {
         if (mockFailConfirm) {
             // 模拟 Confirm 阶段失败：不改变任何状态，发起方将重试
             log.warn("[Storage-Confirm] xid={} 模拟 Confirm 阶段失败（等待发起方重试）", xid);
@@ -122,9 +123,9 @@ public class StorageTccService {
         return TccResponse.ok("CONFIRMED", "库存扣减提交成功");
     }
 
-    /** Cancel：解冻归还（frozen -= n 且 available += n，资源释放） */
+    /** Cancel：解冻归还（frozen -= n 且 available += n，资源释放）——二阶段反射调用 */
     @Transactional
-    public TccResponse cancel(String xid, boolean mockFailCancel) {
+    public TccResponse cancelDeduct(String xid, boolean mockFailCancel) {
         if (mockFailCancel) {
             // 模拟 Cancel 阶段失败：不改变任何状态（包括不写空回滚标记），
             // 发起方将按“回滚必须最终成功”的语义持续重试
